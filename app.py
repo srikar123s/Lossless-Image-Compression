@@ -1,7 +1,7 @@
-# gradio_app.py
-# CAP-RC+++ Gradio app: multi-file, per-image downloads, clean UI
+# streamlit_app.py
+# CAP-RC+++ Streamlit app: multi-file, per-image downloads, clean UI
 
-import gradio as gr
+import streamlit as st
 import numpy as np
 import io, os, struct, time, pandas as pd, warnings, contextlib, sys, tempfile, shutil
 from PIL import Image
@@ -27,11 +27,10 @@ def suppress_output():
         finally:
             sys.stdout, sys.stderr = old_stdout, old_stderr
 
-def fig_to_np(fig):
+def fig_to_png_bytes(fig):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight")
-    buf.seek(0)
-    return np.array(Image.open(buf).convert("RGB"))
+    return buf.getvalue()
 
 # ---------------------------
 # Range coder (24-bit state)
@@ -141,7 +140,6 @@ def ycocg_to_rgb_uint8(ycocg):
 
 # ---------------------------
 # Channel compress/decompress (contextual)
-# ---------------------------
 def compress_channel_contextual(img_channel, num_contexts=4, offset=2048):
     h, w = img_channel.shape
     ctx_res = [[] for _ in range(num_contexts)]
@@ -196,19 +194,26 @@ def decompress_channel_contextual(data, ctx_symbols, ctx_counts, offset, h, w):
 # ---------------------------
 def process_images(files):
     if not files:
-        # return seven outputs expected by Gradio: table, visuals, csv, zip, reconstructed PNGs, bin files, charts
-        return pd.DataFrame(), [], None, None, [], [], []
+        return {
+            "df": pd.DataFrame(),
+            "visuals": [],
+            "csv_bytes": b"",
+            "zip_bytes": b"",
+            "per_items": [],
+            "charts": []
+        }
 
     temp_dir = tempfile.mkdtemp(prefix="caprcppp_")
     rows, visuals, per_links = [], [], []
 
     for f in files:
         try:
-            # f is a temporary file object created by Gradio; use f.name
-            base, ext = os.path.splitext(os.path.basename(f.name))
-            img = np.array(Image.open(f.name).convert("RGB"))
+            file_name = f.name
+            file_bytes = f.getvalue()
+            base, ext = os.path.splitext(os.path.basename(file_name))
+            img = np.array(Image.open(io.BytesIO(file_bytes)).convert("RGB"))
             h, w = img.shape[:2]
-            orig_kb = os.path.getsize(f.name) / 1024.0
+            orig_kb = len(file_bytes) / 1024.0
 
             # optional YCoCg decorrelation (we always use it here)
             proc = rgb_to_ycocg_uint16(img)
@@ -273,7 +278,10 @@ def process_images(files):
             ax[2].imshow(residual, cmap="inferno"); ax[2].set_title("Residual Map")
             for a in ax: a.axis("off")
             fig.suptitle(f"{base}{ext} | CR={cr:.2f}× | PSNR={psnr:.2f} dB")
-            visuals.append(fig_to_np(fig))
+            visuals.append({
+                "name": f"{base}_comparison.png",
+                "bytes": fig_to_png_bytes(fig)
+            })
             plt.close(fig)
 
             rows.append({
@@ -282,7 +290,6 @@ def process_images(files):
                 "Original (KB)": f"{orig_kb:.2f}",
                 "Compressed (KB)": f"{comp_kb:.2f}",
                 "CR (CAP-RC++)": f"{cr:.2f}",
-                "bpp": f"{bpp:.3f}",
                 "PSNR (CAP-RC++)": f"{psnr:.2f} dB",
                 "CompTime": f"{comp_time:.2f}s",
                 "DecompTime": f"{dec_time:.2f}s",
@@ -296,11 +303,17 @@ def process_images(files):
             })
 
         except Exception as e:
-            # print error to server log (keeps UI clean)
-            print(f"Error processing {getattr(f,'name',str(f))}: {e}")
+            st.warning(f"Error processing {getattr(f, 'name', str(f))}: {e}")
 
     if not rows:
-        return pd.DataFrame(), [], None, None, [], [], []
+        return {
+            "df": pd.DataFrame(),
+            "visuals": [],
+            "csv_bytes": b"",
+            "zip_bytes": b"",
+            "per_items": [],
+            "charts": []
+        }
 
     # Dataframe for table
     df = pd.DataFrame(rows)
@@ -309,25 +322,6 @@ def process_images(files):
 
     # zip archive of temp dir
     zip_path = shutil.make_archive(os.path.join(temp_dir, "CAPRCppp_all"), "zip", temp_dir)
-
-    # HTML table for per-image downloads (clickable)
-    html_rows = [
-        "<table style='width:100%; border-collapse:collapse;'>",
-        "<tr><th style='text-align:left;padding:6px'>Image</th><th style='text-align:left;padding:6px'>Reconstructed PNG</th><th style='text-align:left;padding:6px'>Compressed BIN</th></tr>"
-    ]
-    for p in per_links:
-        # file:// links open local files in browser (works for local testing)
-        r = p["Reconstructed PNG"].replace("\\", "/")
-        b = p["Compressed BIN"].replace("\\", "/")
-        html_rows.append(
-            f"<tr>"
-            f"<td style='padding:6px'>{p['Image']}</td>"
-            f"<td style='padding:6px'><a href='file:///{r}' target='_blank'>Download PNG</a></td>"
-            f"<td style='padding:6px'><a href='file:///{b}' target='_blank'>Download BIN</a></td>"
-            f"</tr>"
-        )
-    html_rows.append("</table>")
-    per_links_html = "\n".join(html_rows)
 
     # Charts (only if multiple images)
     charts = []
@@ -355,44 +349,123 @@ def process_images(files):
 
         # JPEG-LS comparison charts removed
 
-    # convert all PNGs and BINs into Gradio-friendly File objects
-    png_files = [p["Reconstructed PNG"] for p in per_links]
-    bin_files = [p["Compressed BIN"] for p in per_links]
+    with open(csv_path, "rb") as f_csv:
+        csv_bytes = f_csv.read()
+    with open(zip_path, "rb") as f_zip:
+        zip_bytes = f_zip.read()
 
-    return df, visuals, csv_path, zip_path, png_files, bin_files, charts
+    per_items = []
+    for p in per_links:
+        rec_path = p["Reconstructed PNG"]
+        bin_path = p["Compressed BIN"]
+        with open(rec_path, "rb") as f_png:
+            rec_png_bytes = f_png.read()
+        with open(bin_path, "rb") as f_bin:
+            bin_bytes = f_bin.read()
+        per_items.append({
+            "image": p["Image"],
+            "rec_png_name": os.path.basename(rec_path),
+            "rec_png_bytes": rec_png_bytes,
+            "bin_name": os.path.basename(bin_path),
+            "bin_bytes": bin_bytes
+        })
+
+    chart_items = []
+    for chart_path in charts:
+        with open(chart_path, "rb") as f_chart:
+            chart_items.append({
+                "name": os.path.basename(chart_path),
+                "bytes": f_chart.read()
+            })
+
+    shutil.rmtree(temp_dir, ignore_errors=True)
+
+    return {
+        "df": df,
+        "visuals": visuals,
+        "csv_bytes": csv_bytes,
+        "zip_bytes": zip_bytes,
+        "per_items": per_items,
+        "charts": chart_items
+    }
 
 
 # ---------------------------
-# Gradio UI
+# Streamlit UI
 # ---------------------------
-with gr.Blocks(theme="gradio/soft") as demo:
-    gr.Markdown("## 🧩CAP-RC+++: Context-Adaptive Lossless Image Compression")
-    gr.Markdown("Upload one or more lossless images (BMP/TIFF). The app provides a summary table, visuals, per-image downloads.")
+st.set_page_config(page_title="CAP-RC+++", layout="wide")
+st.title("CAP-RC+++: Context-Adaptive Lossless Image Compression")
+st.write("Upload one or more lossless images (BMP/TIFF). The app provides a summary table, visuals, and per-image downloads.")
 
-    with gr.Row():
-        inp = gr.File(file_count="multiple", type="filepath", label="📤 Upload Images")
-       
-    btn = gr.Button("🚀 Start Compression", variant="primary")
-
-    out_table = gr.Dataframe(label="📊 Summary Table", wrap=True)
-    out_gallery = gr.Gallery(label="🖼️ Visual Comparison", columns=1, height="auto")
-    csv_file = gr.File(label="📥 Download CSV Summary")
-    zip_file = gr.File(label="📦 Download ZIP (All Files)")
-    rec_pngs = gr.File(label="🖼️ Download Reconstructed PNGs", file_count="multiple")
-    bin_files = gr.File(label="🗃️ Download Compressed BINs", file_count="multiple") 
-    charts_gallery = gr.Gallery(label="📈 Charts (Shown only when >1 image)", columns=2, height="auto")
-
-    btn.click(
-    process_images,
-    inputs=[inp],
-    outputs=[out_table, out_gallery, csv_file, zip_file, rec_pngs, bin_files, charts_gallery]
+uploaded_files = st.file_uploader(
+    "Upload Images",
+    type=["bmp", "tif", "tiff", "png"],
+    accept_multiple_files=True
 )
 
-import os
+if st.button("Start Compression", type="primary"):
+    if not uploaded_files:
+        st.warning("Please upload at least one image.")
+    else:
+        with st.spinner("Compressing and reconstructing images..."):
+            results = process_images(uploaded_files)
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 7860))
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=port
-    )
+        df = results["df"]
+        st.subheader("Summary Table")
+        st.dataframe(df, use_container_width=True)
+
+        st.download_button(
+            "Download CSV Summary",
+            data=results["csv_bytes"],
+            file_name="CAPRCppp_Results.csv",
+            mime="text/csv"
+        )
+        st.download_button(
+            "Download ZIP (All Files)",
+            data=results["zip_bytes"],
+            file_name="CAPRCppp_all.zip",
+            mime="application/zip"
+        )
+
+        if results["visuals"]:
+            st.subheader("Visual Comparison")
+            for visual in results["visuals"]:
+                st.download_button(
+                    "Download comparison image",
+                    data=visual["bytes"],
+                    file_name=visual["name"],
+                    mime="image/png",
+                    key=f"visual_{visual['name']}"
+                )
+
+        st.subheader("Per-Image Downloads")
+        for idx, item in enumerate(results["per_items"], start=1):
+            with st.expander(item["image"], expanded=False):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.download_button(
+                        "Download Reconstructed PNG",
+                        data=item["rec_png_bytes"],
+                        file_name=item["rec_png_name"],
+                        mime="image/png",
+                        key=f"png_{idx}_{item['rec_png_name']}"
+                    )
+                with col2:
+                    st.download_button(
+                        "Download Compressed BIN",
+                        data=item["bin_bytes"],
+                        file_name=item["bin_name"],
+                        mime="application/octet-stream",
+                        key=f"bin_{idx}_{item['bin_name']}"
+                    )
+
+        if results["charts"]:
+            st.subheader("Charts")
+            for chart in results["charts"]:
+                st.download_button(
+                    f"Download {chart['name']}",
+                    data=chart["bytes"],
+                    file_name=chart["name"],
+                    mime="image/png",
+                    key=f"chart_{chart['name']}"
+                )

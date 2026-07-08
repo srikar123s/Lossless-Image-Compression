@@ -1,8 +1,7 @@
-gradio==5.38.2
+streamlit
 numpy
 pandas
 pillow
 bitarray
 matplotlib
 plotly
-python-3.11.11
