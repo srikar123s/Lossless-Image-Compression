@@ -366,7 +366,7 @@ def process_images(files):
 # Gradio UI
 # ---------------------------
 with gr.Blocks(theme="gradio/soft") as demo:
-    gr.Markdown("## 🧩 CAP-RC+++ — Context-Adaptive Range Coding + Gradient-Weighted Predictor")
+    gr.Markdown("## 🧩CAP-RC+++: Context-Adaptive Lossless Image Compression")
     gr.Markdown("Upload one or more lossless images (BMP/TIFF). The app provides a summary table, visuals, per-image downloads.")
 
     with gr.Row():
