@@ -388,6 +388,11 @@ with gr.Blocks(theme="gradio/soft") as demo:
     outputs=[out_table, out_gallery, csv_file, zip_file, rec_pngs, bin_files, charts_gallery]
 )
 
-if __name__ == "__main__":
-     demo.launch(server_name="0.0.0.0", server_port=7860)
+import os
 
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 7860))
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=port
+    )
