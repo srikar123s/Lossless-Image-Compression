@@ -1,6 +1,7 @@
-streamlit
+gradio
 numpy
-Pillow
+pandas
+pillow
 bitarray
 matplotlib
-pandas
+plotly
