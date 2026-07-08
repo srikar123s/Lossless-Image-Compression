@@ -5,3 +5,4 @@ pillow
 bitarray
 matplotlib
 plotly
+python-3.11.11
