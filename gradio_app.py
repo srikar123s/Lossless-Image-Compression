@@ -367,7 +367,7 @@ def process_images(files):
 # ---------------------------
 with gr.Blocks(theme="gradio/soft") as demo:
     gr.Markdown("## 🧩 CAP-RC+++ — Context-Adaptive Range Coding + Gradient-Weighted Predictor")
-    gr.Markdown("Upload one or more lossless images (PNG/BMP/TIFF). The app provides a summary table, visuals, per-image downloads.")
+    gr.Markdown("Upload one or more lossless images (BMP/TIFF). The app provides a summary table, visuals, per-image downloads.")
 
     with gr.Row():
         inp = gr.File(file_count="multiple", type="filepath", label="📤 Upload Images")
